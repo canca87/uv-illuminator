@@ -286,3 +286,88 @@
   confirming the frequency string doesn't visually jump/flicker at the pot's full update rate,
   and that `%-16s` padding correctly clears a stale `"FAULT           "` when transitioning back
   from `FAULT` to `SAFE`.
+
+## 2026-08-21 — Fixed blocking DS18S20 read (HAS_TEMP_SENSOR responsiveness bug); doc cleanup; repo hygiene
+
+- **Symptom (user-reported):** on `HAS_TEMP_SENSOR` units, pot/button responsiveness was badly
+  laggy (up to ~500 ms to reflect a pot change; button presses intermittently missed) even though
+  the heartbeat pattern updated correctly. Units without the sensor were unaffected.
+- **Root cause:** `faultActive()` (`src/main.cpp`) called `tempSensor.requestTemperatures()` once
+  a second with the `DallasTemperature` library's default `setWaitForConversion(true)`, which
+  blocks inside `delay()` until the conversion finishes — ~750 ms for a DS18S20 (fixed, not
+  configurable via `setResolution()` like the DS18B20). `faultActive()` runs unconditionally every
+  `loop()` iteration, so the entire superloop — pot sampling, LCD refresh, button debounce, heartbeat
+  — froze for ~750 ms once a second. This also technically violated the CLAUDE.md architecture
+  rationale for avoiding an RTOS (SR-23's 500 ms fault-indication budget), since a real fault event
+  landing inside that window couldn't propagate to `ARM_GATE`/`FAULT_OUT` until the block cleared.
+- **Fix:** non-blocking two-phase read, matching the existing `millis()`-gated periodic-task
+  pattern used elsewhere in this file:
+  - `setup()`: added `tempSensor.setWaitForConversion(false)` after `tempSensor.begin()`.
+  - `faultActive()`: replaced the single blocking gate with a `TempPhase { IDLE, CONVERTING }`
+    state machine — `IDLE` issues `requestTemperatures()` (now non-blocking, starts the
+    conversion and returns immediately) once the 1 s sample interval elapses; `CONVERTING` reads
+    the result once either `tempSensor.isConversionComplete()` (polls the bus busy bit — fast,
+    accurate) or a 750 ms ceiling elapses (fallback in case the sensor turns out to be
+    parasite-powered, where bus-busy polling isn't reliable — VDD wiring isn't documented in
+    `pins.md` and wasn't chased down this session; the ceiling makes the fix correct either way
+    without needing that answer).
+  - Deliberately did **not** use `DallasTemperature::millisToWaitForConversion()` — checked the
+    vendored library (`.pio/libdeps/.../DallasTemperature.cpp`) and confirmed it hardcodes
+    `bitResolution = 9` for a detected DS18S20 and returns 94 ms for 9-bit, which is the DS18B20's
+    resolution-dependent table value, not the DS18S20's actual fixed ~750 ms requirement. Using it
+    here would have silently fed stale/incomplete-conversion readings into the over-temp check.
+  - Boot-time behavior is unchanged: `lastTempC` still starts at `0.0f` and the first real reading
+    still lands ~1.75 s after boot in both the old and new code, so `overTemp` reads `false`
+    through that window either way. The loop no longer freezes during that window, which is the
+    intended improvement, not a behavior change to the fault logic.
+- **Verified:** built both `curiosity_nano_db` and `curiosity_nano_db_debug` clean before and after.
+  User flashed `curiosity_nano_db_debug` to a `HAS_TEMP_SENSOR` unit and confirmed responsiveness
+  is restored ("tested it and it works well"). Not re-verified this session: the LCD
+  FAULT→SAFE transition visual check flagged as open in the previous entry.
+- **Known pre-existing gap, noted but not fixed:** if the DS18S20 is disconnected,
+  `getTempCByIndex(0)` returns `DEVICE_DISCONNECTED_C` (-127.0 °C), which reads as "no fault" —
+  a disconnected sensor is currently indistinguishable from "temperature is fine." Not introduced
+  by this session's change; flagged for a future decision on whether disconnection should itself
+  be treated as a fault.
+
+### Doc/comment cleanup
+
+User asked for a review of stale comments/docs in preparation for cleanup; reviewed the full doc
+set (`CLAUDE.md`, `README.md`, `pins.md`, `pins.h`, `debug_log.h`, `session_log.md`) plus every
+comment in `main.cpp`. `README.md` and `debug_log.h` were already accurate — no changes. Fixed,
+after user review and go-ahead:
+- `CLAUDE.md` "Architecture" section: removed `ARMED_IDLE` from the `enum class State` example and
+  the ARM_GATE bullet — that state doesn't exist in the actual 4-state machine
+  (`INIT, SAFE, ILLUMINATING, FAULT`); looks like a leftover from an earlier design iteration.
+- `src/main.cpp`: reworded the `FAULT` case's `// Fault LED not yet implemented` comment (implied
+  future work) to reflect what's actually true — PE1 is confirmed not populated on this
+  application, not "not yet done". Also dropped the duplicate `TODO: confirm frequency
+  range/mapping` comment on the `setpointFreqHz` declaration, keeping the one in `samplePots()`
+  next to the actual `map()` call it refers to.
+- `include/pins.h`: fixed a dead cross-reference to a `CLAUDE.md` "Board-role selection" heading
+  that no longer exists (renamed to "Fault chain (multi-board fault topology)" when the old
+  `BOARD_ROLE` flag was retired).
+- `pins.md`: removed a duplicate `LED_FAULT | PE1` row in the "Present on shared board — NOT used"
+  table (same fact stated twice). Normally `pins.md` edits require explicit user sign-off per
+  CLAUDE.md — user explicitly asked for this one.
+- Rebuilt both environments clean after all comment/doc edits (identical flash/RAM usage to before,
+  as expected for comment-only changes).
+
+### Repo hygiene
+
+- `.gitignore`: added `.cache/`, `compile_commands.json` (both clangd-generated), and `.DS_Store`
+  (not previously covered, macOS dev machine).
+- `compile_commands.json` and `.cache/clangd/index/*.idx` were tracked in git despite being
+  machine-generated (confirmed via `git status` — two `.cache` files showed as "modified" purely
+  from clangd re-indexing during this session's edits). Untracked both with `git rm --cached`,
+  per user confirmation — files remain on disk, just stop being tracked/diffed going forward.
+- Added `LICENSE` (MIT), copyright "Adam Chrimes, 2026" per `git log` authorship, per user
+  confirmation.
+- None of the gitignore/untrack/license changes are committed — left staged/on-disk for the user
+  to commit deliberately.
+- Next: nothing specific queued. Residual open items carried forward: (1) LCD FAULT→SAFE visual
+  transition check (from the previous entry, still not hardware-verified), (2) whether DS18S20
+  disconnection should be treated as a fault condition (noted above, not acted on), (3) DS18S20
+  VDD wiring (parasite vs. external power) is still undocumented in `pins.md` — not currently
+  blocking anything since the non-blocking temp-read fix is correct either way, but worth closing
+  out if it comes up again.

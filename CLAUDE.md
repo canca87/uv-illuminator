@@ -57,11 +57,11 @@ Why:
   future maintainers (including non-RTOS-experienced firmware engineers) to follow.
 
 Structure:
-- `enum class State { INIT, SAFE, ARMED_IDLE, ILLUMINATING, FAULT }` drives a single `switch` in
+- `enum class State { INIT, SAFE, ILLUMINATING, FAULT }` drives a single `switch` in
   `loop()`. State transitions are explicit and logged over `Serial2`.
 - Periodic tasks (pot sampling, LCD refresh, heartbeat, fault/temp poll) are each gated by their
   own `millis()` interval check — no `delay()` anywhere in `loop()`.
-- ARM_GATE is only ever driven HIGH from the `ARMED_IDLE`/`ILLUMINATING` states; any fault or
+- ARM_GATE is only ever driven HIGH from the `ILLUMINATING` state; any fault or
   button-press-to-disarm transition drives it LOW/Hi-Z immediately, ahead of any display or log update.
 
 Revisit this decision only if the application grows genuinely concurrent requirements (e.g.

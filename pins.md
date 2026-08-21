@@ -215,6 +215,5 @@ For reference only, so these nets aren't accidentally repurposed. Full detail in
 | 8-bit digital output (DIG_D0-7) | PC0-PC7 | Not used — power level set via DAC only |
 | SPI0 (external DAC8551 / n/a here) | PA4-PA7 | Superseded by LCD use on these pins |
 | RS-485 / FTDI | PA0, PA1, PB2 | Confirmed: serial port is debug-only, no RS-485/Modbus |
-| LED_FAULT | PE1 | Fault LED not installed on this application (confirmed) |
 | LASER_FAULT_IN (FAULT_IN) | PF4 (J23) | **Deprecated 2026-07-30** — first-round FAULT_IN candidate, superseded same day; see "Fault chain" section and `session_log.md`. Net still exists on the schematic, just not read by this firmware. |
 | FB_IN_ADC (FAULT_IN) | PD5 (J17) | **Deprecated 2026-07-30** — second-round FAULT_IN candidate; per the user, "the circuit can't do active high inputs" on this pin. Superseded by PB4/J18 the same day. |

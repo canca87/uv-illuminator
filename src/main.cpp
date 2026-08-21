@@ -57,7 +57,7 @@ static float lastTempC = 0.0f;  // cached between 1 s conversions, shared with l
 // ---------------------------------------------------------------------------
 static uint16_t setpointPower = 0;      // raw ADC, 0-1023, drives DAC_OUT
 static uint16_t setpointDutyPct = 0;    // 0-100
-static uint32_t setpointFreqHz = 1000;  // TODO: confirm application frequency range/mapping
+static uint32_t setpointFreqHz = 1000;
 
 // ---------------------------------------------------------------------------
 // Button (active-LOW, debounced)
@@ -143,6 +143,7 @@ void setup() {
   tempSensor.begin();
   LOG_PRINT(F("[init] DS18S20 (PF2) devices found: "));
   LOG_PRINTLN(tempSensor.getDeviceCount());
+  tempSensor.setWaitForConversion(false);  // conversion polled non-blocking in faultActive()
 #endif
 
   lcd.begin(16, 2);
@@ -205,7 +206,7 @@ void loop() {
     case State::FAULT:
       armGate(false);
       pulseEnable(false);
-      // Fault LED not yet implemented — see CLAUDE.md open questions.
+      // No fault LED — PE1 not populated on this application (see pins.md).
       // Latched: fault must clear AND operator must press the button to re-arm (CN-14/SR-23).
       if (!fault && pressed) {
         state = State::SAFE;
@@ -349,16 +350,37 @@ static bool faultActive() {
   }
 
 #if HAS_TEMP_SENSOR
-  static uint32_t lastRead = 0;
+  // Non-blocking conversion (setWaitForConversion(false) in setup()): request starts the
+  // conversion and returns immediately, then this polls readiness instead of stalling loop()
+  // for the ~750 ms it takes the DS18S20 to convert. isConversionComplete() polls the bus busy
+  // bit for an accurate ready signal; the 750 ms ceiling is a fallback so this can't get stuck
+  // in CONVERTING (e.g. if the sensor is parasite-powered, where bus polling isn't reliable).
+  // Note: DallasTemperature::millisToWaitForConversion() is NOT used here — it assumes the
+  // DS18B20's resolution-dependent table (94 ms at "9-bit"), not the DS18S20's fixed ~750 ms.
+  enum class TempPhase { IDLE, CONVERTING };
+  static TempPhase tempPhase = TempPhase::IDLE;
+  static uint32_t phaseStart = 0;
+  static const uint32_t SAMPLE_INTERVAL_MS = 1000;
+  static const uint32_t CONVERSION_CEILING_MS = 750;
   uint32_t now = millis();
-  if (now - lastRead >= 1000) {
-    lastRead = now;
-    tempSensor.requestTemperatures();
-    lastTempC = tempSensor.getTempCByIndex(0);
-    LOG_PRINT(F("[temp] "));
-    LOG_PRINT(lastTempC);
-    LOG_PRINTLN(F("C"));
+
+  if (tempPhase == TempPhase::IDLE) {
+    if (now - phaseStart >= SAMPLE_INTERVAL_MS) {
+      tempSensor.requestTemperatures();  // non-blocking: starts conversion, returns immediately
+      phaseStart = now;
+      tempPhase = TempPhase::CONVERTING;
+    }
+  } else {
+    if (tempSensor.isConversionComplete() || (now - phaseStart >= CONVERSION_CEILING_MS)) {
+      lastTempC = tempSensor.getTempCByIndex(0);
+      LOG_PRINT(F("[temp] "));
+      LOG_PRINT(lastTempC);
+      LOG_PRINTLN(F("C"));
+      phaseStart = now;
+      tempPhase = TempPhase::IDLE;
+    }
   }
+
   bool overTemp = lastTempC >= OVER_TEMP_LIMIT_C;
   return faultIn || overTemp;
 #else

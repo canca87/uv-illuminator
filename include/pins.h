@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 // Temperature sensor population — whether this physical unit has a DS18S20 fitted (PF2).
 // Independent of the fault in/out pins below, which are wired and active on every unit
-// regardless. See pins.md "Fault chain" / CLAUDE.md "Board-role selection".
+// regardless. See pins.md "Fault chain" / CLAUDE.md "Fault chain (multi-board fault topology)".
 // ---------------------------------------------------------------------------
 #ifndef HAS_TEMP_SENSOR
 #define HAS_TEMP_SENSOR 1
